@@ -3,3 +3,4 @@ pysd>=3.14.0
 pandas>=2.0.0
 networkx
 pyvis
+plotly
