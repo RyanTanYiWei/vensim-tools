@@ -4,6 +4,10 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
+import plotly.io as pio
+
+# Set plotly template to ensure colors work in HTML export
+pio.templates.default = "plotly"
 
 # --- Page config ---
 st.set_page_config(page_title="Flexible Vensim Plotter", page_icon="📊", layout="wide")
@@ -506,6 +510,20 @@ if df is not None:
                 
                 fig = None
                 
+                # Streamlit color sequence for consistent colors
+                streamlit_colors = [
+                    "#0068c9",
+                    "#83c9ff",
+                    "#ff2b2b",
+                    "#ffabab",
+                    "#29b09d",
+                    "#7defa1",
+                    "#ff8700",
+                    "#ffd16a",
+                    "#6d3fc0",
+                    "#d5dae5",
+                ]
+                
                 # Prepare common parameters
                 plot_params = {
                     'data_frame': df_plot,
@@ -514,7 +532,8 @@ if df is not None:
                     'color': color_by,
                     'facet_col': facet_by,
                     'height': height,
-                    'log_y': log_y
+                    'log_y': log_y,
+                    'color_discrete_sequence': streamlit_colors
                 }
                 
                 # Create plot based on type
@@ -524,6 +543,8 @@ if df is not None:
                     fig = px.scatter(**plot_params)
                 elif plot_type == "Bar Chart":
                     fig = px.bar(**plot_params, barmode=bar_mode if 'bar_mode' in locals() else 'group')
+                elif plot_type == "Area Chart":
+                    fig = px.area(**plot_params)
                 elif plot_type == "Area Chart":
                     fig = px.area(**plot_params)
                 
@@ -544,7 +565,8 @@ if df is not None:
                         hovermode='x unified',
                         showlegend=show_legend,
                         template='plotly_white',
-                        yaxis=y_axis_config
+                        yaxis=y_axis_config,
+                        margin=dict(l=20, r=80, t=30, b=20)
                     )
                     
                     # Update hover template to show full values
@@ -559,31 +581,56 @@ if df is not None:
                     if not connect_gaps:
                         fig.update_traces(connectgaps=False)
                     
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Enable download buttons in plotly chart itself
+                    config = {
+                        'toImageButtonOptions': {
+                            'format': 'png',
+                            'filename': 'plot',
+                            'width': None,
+                            'height': None,
+                            'scale': 2
+                        },
+                        'displayModeBar': True,
+                        'displaylogo': False
+                    }
                     
-                    # Download options
-                    st.subheader("💾 Export")
+                    st.plotly_chart(fig, use_container_width=True, config=config)
                     
+                    st.caption("💡 Tip: Use the 📷 camera icon in the chart above to download as PNG")
+                    
+                    # Download buttons below the plot
                     export_col1, export_col2 = st.columns(2)
                     
                     with export_col1:
-                        # Export filtered data
-                        csv_data = df_filtered.to_csv(index=False).encode('utf-8')
-                        st.download_button(
-                            label="📥 Download Filtered Data (CSV)",
-                            data=csv_data,
-                            file_name="filtered_data.csv",
-                            mime="text/csv"
+                        # Export plot as HTML with full plotly library embedded
+                        html_data = fig.to_html(
+                            include_plotlyjs=True, 
+                            config={
+                                'displayModeBar': True,
+                                'toImageButtonOptions': {
+                                    'format': 'png',
+                                    'filename': 'plot',
+                                    'width': None,
+                                    'height': None,
+                                    'scale': 2                
+                                }
+                            }
                         )
-                    
-                    with export_col2:
-                        # Export plot as HTML
-                        html_data = fig.to_html(include_plotlyjs='cdn')
                         st.download_button(
                             label="📊 Download Plot (HTML)",
                             data=html_data,
                             file_name="plot.html",
                             mime="text/html"
+                        )
+                    
+                    with export_col2:
+                        # Export filtered data
+                        csv_data = df_filtered.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📥 Download Data (CSV)",
+                            data=csv_data,
+                            file_name="filtered_data.csv",
+                            mime="text/csv"
                         )
                 
             except Exception as e:
