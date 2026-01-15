@@ -80,10 +80,16 @@ of existing model versions as part of your workflow.
    Convert causal loop diagrams (CLDs) from Vensim to typical **network formats** (i.e., node and edge lists). 
    This tool does not perform any analytical operations; it does only the "conversion", allowing visualization 
    and analysis to be conducted on other plaforms.
+
+4. **📊 Vensim Plotter**  
+   Transform Vensim simulation outputs into interactive, publication-ready charts. This flexible visualization tool 
+   allows you to paste data directly from Excel or upload CSV files, create multi-dimensional groupings, apply 
+   filters, and export charts for presentations and reports.
 ---
 
 ##### 🔮 Future Enhancements
 - *(Sandeep)* **Improve colour schemes** in Version Comparison to make differences easier to spot.  
+- *(YQL)* Allow **filtering of views for version comparison**
 - *(Sandeep)* **Enable saving and uploading of parsed files** to reduce waiting times when re-running analyses.  
 - *(Ryan)* **Provide useful network metrics** (e.g., centrality measures, feedback loop detection) in CLD to Network Conversion to enrich insights beyond structural export. 
 """

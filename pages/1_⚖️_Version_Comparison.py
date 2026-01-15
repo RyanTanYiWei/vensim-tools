@@ -40,16 +40,23 @@ def save_to_temp(uploaded_file) -> Path:
     return tmp_path
 
 
-def extract_equations_with_pysd(model_path: Path) -> Tuple[Dict[str, str], List[str]]:
+def extract_equations_with_pysd(model_path: Path, parse_views: bool = True) -> Tuple[Dict[str, str], List[str], Dict[str, str]]:
+    """
+    Returns: (equations, debug, var_to_view) where var_to_view maps variable name to view/section name
+    Args:
+        model_path: Path to the .mdl file
+        parse_views: If False, skips view parsing for faster performance
+    """
     try:
         import pysd
     except Exception as e:
-        return {}, [f"PySD import failed: {e}"]
+        return {}, [f"PySD import failed: {e}"], {}
 
     equations: Dict[str, str] = {}
+    var_to_view: Dict[str, str] = {}  # Maps variable name to its view/section
     debug: List[str] = [f"Using PySD {getattr(pysd, '__version__', 'unknown')} for '{model_path.name}'"]
 
-    # First, try raw Vensim parse (works even if model can't run)
+    # First, extract equations using raw parse
     try:
         from pysd.translators.vensim.vensim_file import VensimFile  # type: ignore
         vf = VensimFile(str(model_path))
@@ -78,7 +85,6 @@ def extract_equations_with_pysd(model_path: Path) -> Tuple[Dict[str, str], List[
 
         for section in sections:
             elements = getattr(section, "elements", []) or []
-            debug.append(f"Section elements: {len(elements)}")
             for element in elements:
                 name = (
                     getattr(element, "name", None)
@@ -97,77 +103,49 @@ def extract_equations_with_pysd(model_path: Path) -> Tuple[Dict[str, str], List[
     except Exception as e:
         debug.append(f"Raw parse failed: {e}")
 
-    # If raw parse failed to produce results, try translation-based model
-    if not equations:
+    # Now extract view information using PySD's split_views feature (only if requested)
+    if parse_views:
         try:
-            model = pysd.read_vensim(str(model_path))
-            debug.append("Translation succeeded")
+            import re
+            import tempfile
+            
+            # Read and clean the .mdl text in memory
+            text = model_path.read_text(encoding='utf-8', errors='ignore')
+            cleaned_text = re.sub(r"\(\d+,\d+\)\|", "", text)
+            
+            # Create a temporary file for PySD
+            tmp_file = tempfile.NamedTemporaryFile(mode="w+", suffix=".mdl", delete=False, encoding='utf-8')
+            tmp_file.write(cleaned_text)
+            tmp_file.flush()
+            tmp_file.close()
+            
+            # Parse with split_views
+            models = pysd.read_vensim(tmp_file.name, split_views=True, initialize=False)
+            
+            # Map PySD variable names back to Vensim names
+            py_to_vensim = {py_name: vensim_name for vensim_name, py_name in models.namespace.items()}
+            
+            # Build the view mapping
+            for view_name, py_vars in getattr(models, "modules", {}).items():
+                for py_var in py_vars:
+                    vensim_name = py_to_vensim.get(py_var, py_var)
+                    var_to_view[vensim_name] = view_name
+            
+            debug.append(f"Views parsed: {len(var_to_view)} variables across {len(getattr(models,'modules',{}))} views")
+            
+            # Clean up temp file
+            import os
+            try:
+                os.unlink(tmp_file.name)
+            except:
+                pass
+                
         except Exception as e:
-            debug.append(f"Translation failed: {e}")
-            return {}, debug
+            debug.append(f"PySD view parsing failed: {e}")
+    else:
+        debug.append("View parsing skipped (fast mode)")
 
-        doc = getattr(model, "doc", None)
-        if doc is not None:
-            try:
-                name_col = "Real Name" if "Real Name" in doc.columns else None
-                eq_col = "Equation" if "Equation" in doc.columns else None
-                debug.append(f"model.doc rows: {len(doc)}; cols: {list(doc.columns)}")
-                alt_eq_cols = [c for c in ["Eqn", "Formula", "Definition"] if c in getattr(doc, "columns", [])]
-                if name_col and (eq_col or alt_eq_cols):
-                    for _, row in doc.iterrows():
-                        name = str(row[name_col]).strip()
-                        eq_val = row[eq_col] if eq_col else row[alt_eq_cols[0]]
-                        eq = str(eq_val).strip()
-                        if name:
-                            equations[name] = eq
-            except Exception as e:
-                debug.append(f"Reading model.doc failed: {e}")
-
-        if not equations:
-            try:
-                possible_containers = [
-                    getattr(model, "components", None),
-                    getattr(model, "_namespace", None),
-                    getattr(getattr(model, "components", None) or object(), "_namespace", None),
-                    getattr(getattr(model, "components", None) or object(), "namespace", None),
-                    getattr(getattr(model, "components", None) or object(), "elements", None),
-                ]
-                found_any = False
-                for container in possible_containers:
-                    if not container:
-                        continue
-                    if hasattr(container, "items"):
-                        found_any = True
-                        debug.append(f"Namespace container items: {len(list(container.items()))}")
-                        for name, meta in container.items():
-                            eq = None
-                            if isinstance(meta, dict):
-                                eq = meta.get("orig_eqn") or meta.get("equation") or meta.get("eqn")
-                            if eq is None and hasattr(meta, "get"):
-                                try:
-                                    eq = meta.get("equation")
-                                except Exception:
-                                    pass
-                            if eq:
-                                equations[str(name)] = str(eq).strip()
-                    else:
-                        for attr in ["_namespace", "namespace", "elements"]:
-                            ns = getattr(container, attr, None)
-                            if hasattr(ns, "items"):
-                                found_any = True
-                                debug.append(f"Namespace via {attr}: {len(list(ns.items()))}")
-                                for name, meta in ns.items():
-                                    eq = None
-                                    if isinstance(meta, dict):
-                                        eq = meta.get("orig_eqn") or meta.get("equation") or meta.get("eqn")
-                                    if eq:
-                                        equations[str(name)] = str(eq).strip()
-                if not found_any:
-                    raise AttributeError("No namespace container found on model")
-            except Exception as e:
-                debug.append(f"Reading components namespace failed: {e}")
-
-    return equations, debug
+    return equations, debug, var_to_view
 
 
 def diff_equation_maps(a: Dict[str, str], b: Dict[str, str]) -> Tuple[Dict[str, str], Dict[str, Tuple[str, str]], Dict[str, str]]:
@@ -181,21 +159,33 @@ def diff_equation_maps(a: Dict[str, str], b: Dict[str, str]) -> Tuple[Dict[str, 
 
 
 if file_a and file_b:
-    recompute = st.button("Compare Models")
-    st.info("Click 'Compare Model' to extract equations and compare changes.")
-    if recompute:
+    st.markdown("### Comparison Mode")
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        compare_full = st.button("⚡ Compare Full Models (Fast)", use_container_width=True)
+    with col_btn2:
+        compare_views = st.button("🔍 Compare Model Views (Slow)", use_container_width=True)
+    
+    st.info("**Fast Mode**: Compares all variables without view information. **Slow Mode**: Parses view/module information for filtering.")
+    
+    if compare_full or compare_views:
+        parse_views = compare_views  # Only parse views in slow mode
         with st.spinner("Parsing models with PySD..."):
             path_a = save_to_temp(file_a)
             path_b = save_to_temp(file_b)
-            eq_a, dbg_a = extract_equations_with_pysd(path_a)
-            eq_b, dbg_b = extract_equations_with_pysd(path_b)
+            eq_a, dbg_a, views_a = extract_equations_with_pysd(path_a, parse_views=parse_views)
+            eq_b, dbg_b, views_b = extract_equations_with_pysd(path_b, parse_views=parse_views)
+        
         st.session_state["_diff_result"] = {
             "eq_a": eq_a,
             "eq_b": eq_b,
+            "views_a": views_a,
+            "views_b": views_b,
             "dbg_a": dbg_a,
             "dbg_b": dbg_b,
             "a_name": Path(file_a.name).name,
             "b_name": Path(file_b.name).name,
+            "parse_views": parse_views,
         }
 
     diff = st.session_state.get("_diff_result")
@@ -203,6 +193,7 @@ if file_a and file_b:
         eq_a = diff["eq_a"]; eq_b = diff["eq_b"]
         dbg_a = diff["dbg_a"]; dbg_b = diff["dbg_b"]
         a_name = diff["a_name"]; b_name = diff["b_name"]
+        views_a = diff.get("views_a", {}); views_b = diff.get("views_b", {})
 
         if not eq_a or not eq_b:
             st.warning("Unable to extract equations from one or both models.")
@@ -215,11 +206,51 @@ if file_a and file_b:
                     st.write(line)
                 st.write(f"Equations extracted: {len(eq_b)}")
         else:
-            only_a, changed, only_b = diff_equation_maps(eq_a, eq_b)
+            # Check if views were parsed
+            parse_views = diff.get("parse_views", False)
+            
+            if parse_views:
+                # --- Filter Model Views Section ---
+                st.subheader("🔍 Filter Model Views")
+                st.markdown("Select which views/modules to include in the comparison. By default, all views are included.")
+                
+                # Get all unique views from both models
+                all_views = sorted(set(list(views_a.values()) + list(views_b.values())))
+                
+                if all_views:
+                    selected_views = st.multiselect(
+                        "Select views to include",
+                        options=all_views,
+                        default=all_views,
+                        help="Uncheck views you want to exclude from the comparison"
+                    )
+                    
+                    # Filter equations based on selected views
+                    if selected_views:
+                        eq_a_filtered = {k: v for k, v in eq_a.items() if views_a.get(k, "Unknown View") in selected_views}
+                        eq_b_filtered = {k: v for k, v in eq_b.items() if views_b.get(k, "Unknown View") in selected_views}
+                    else:
+                        eq_a_filtered = {}
+                        eq_b_filtered = {}
+                    
+                    st.info(f"📊 Filtered: {len(eq_a_filtered)}/{len(eq_a)} variables from Model A, {len(eq_b_filtered)}/{len(eq_b)} variables from Model B")
+                else:
+                    st.info("No view information available. Showing all variables.")
+                    eq_a_filtered = eq_a
+                    eq_b_filtered = eq_b
+                
+                st.markdown("---")
+            else:
+                # Fast mode: no filtering
+                eq_a_filtered = eq_a
+                eq_b_filtered = eq_b
+            
+            # Use filtered equations for comparison
+            only_a, changed, only_b = diff_equation_maps(eq_a_filtered, eq_b_filtered)
 
-            total_a = len(eq_a)
-            total_b = len(eq_b)
-            common = set(eq_a.keys()) & set(eq_b.keys())
+            total_a = len(eq_a_filtered)
+            total_b = len(eq_b_filtered)
+            common = set(eq_a_filtered.keys()) & set(eq_b_filtered.keys())
             changed_count = len(changed)
             similar_count = max(len(common) - changed_count, 0)
 
